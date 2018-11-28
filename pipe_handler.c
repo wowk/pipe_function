@@ -178,7 +178,6 @@ handle_pipe_command(char* cmds, char* cmd, size_t cmd_len, bool* sub_process)
             buf[1024] = 0;
             ssize_t size = read(STDIN_FILENO, buf, 1024);
             buf[size] = 0;
-            printf("size: %u, %s\n", size, buf);
 
             return 0;
         }else {
@@ -194,7 +193,7 @@ handle_pipe_command(char* cmds, char* cmd, size_t cmd_len, bool* sub_process)
                 resultbuf = NULL;
                 resultbuf_len = 0;
             }else{
-                write(pipe_fd[1], "1", 1);
+                write(pipe_fd[1], "", 1);
             }
             close(pipe_fd[1]);
             pipe_fd[1] = -1;
