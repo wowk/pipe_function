@@ -7,6 +7,7 @@
 #include <alloca.h>
 #include <ctype.h>
 #include <errno.h>
+#include <limits.h>
 #include <unistd.h>
 #include <fcntl.h>
 #include <sys/wait.h>
@@ -43,7 +44,7 @@ readall(int fd, char** buffer)
 {
     size_t size;
     size_t total_size;
-    size_t bufsize = 128;
+    size_t bufsize = PIPE_BUF;
 
     total_size = 0;
     *buffer = (char*)malloc(bufsize);
@@ -60,14 +61,14 @@ readall(int fd, char** buffer)
             return -errno;
         }
         else if( size < bufsize - total_size){
-            printf("got final data\n");
+            printf("got final data: %d\n", size);
             total_size += size;
             break;
         }
         else{
             printf("got data\n");
             total_size += size;
-            bufsize <= 1;
+            bufsize <<= 1;
             *buffer = (char*)realloc(*buffer, bufsize);
         }
     }
@@ -75,16 +76,60 @@ readall(int fd, char** buffer)
     return total_size;
 }
 
-static char*
-parse_arg(char** pstr)
+static int inline
+isquotation(char ch)
 {
-    bool need_right_quotation = false;
-    char get_left_quotation = 0;
-    char* ptr = *pstr;
+    return (ch == '\'' || ch== '\"');
+}
 
-    while(*pstr){
+static int
+parse_arg(char* pstr, char* argv[], size_t max_argv_cnt)
+{
+    char left_quotation = 0;
+    char* ptr = pstr;
+    size_t argv_cnt = 0;
+
+    while(argv_cnt < max_argv_cnt && *ptr){
+        if(isspace(*ptr)){
+            *ptr ++ = 0;
+            continue;
+        }
+        if(isquotation(*ptr)){
+            left_quotation = *ptr;
+            *ptr++ = 0;
+            argv[argv_cnt++] = ptr;
+            while(*ptr && (*ptr != left_quotation || *(ptr-1) == '\\')){
+                ptr ++;
+            }
+            if( *ptr == 0 ){
+                return -1;
+            }else if(*(ptr+1) == 0){
+                *ptr = 0;
+                return argv_cnt;
+            }else if(isspace(*(ptr+1))){
+                *ptr = 0;
+                ptr++;
+            }else{
+                return -1;
+            }
+        }
+        else{
+            argv[argv_cnt++] = ptr++;
+            while(*ptr && !isspace(*ptr)){
+                if(isquotation(*ptr)){
+                    if(*(ptr-1) != '\\'){
+                        return -1;
+                    }
+                }else if(isspace(*ptr)){
+                    *ptr ++ = 0;
+                    break;
+                }
+                ptr ++;
+            }
+        }
     }
-    return NULL;
+
+    return argv_cnt;
 }
 
 static int
@@ -98,11 +143,9 @@ handle_pipe_command(char* cmds, char* cmd, size_t cmd_len, bool* sub_process)
     const char* delim;
     char* resultbuf;
     ssize_t resultbuf_len;
-    char* next_command;
     char* pipe_ch_pos;
     int pipe_ch_cnt;
     int retval;
-    size_t len;
     int pipe_fd[2];
 
     ptr = cmds;
@@ -170,21 +213,42 @@ handle_pipe_command(char* cmds, char* cmd, size_t cmd_len, bool* sub_process)
         }else if(retval == 0){
             dup2(pipe_fd[0], STDIN_FILENO);
             dup2(pipe_fd[1], STDOUT_FILENO);
-            dup2(pipe_fd[1], STDERR_FILENO);
-
-            snprintf(cmd, cmd_len, "%s", command[i]);
-            *sub_process = true;
-            char buf[1025] = "";
-            buf[1024] = 0;
-            ssize_t size = read(STDIN_FILENO, buf, 1024);
-            buf[size] = 0;
-
+            //dup2(pipe_fd[1], STDERR_FILENO);
+            
+            //char buf[1025] = "";
+            //buf[1024] = 0;
+            //ssize_t size = read(STDIN_FILENO, buf, 1024);
+            //buf[size] = 0;
+            
+            /* only support <grep> currently */
+            if(!strncmp(command[i], "grep ", 5) ){
+                char* argv[33];
+                char* file = "/bin/grep";
+                fprintf(stderr, "child got command: %s\n", command[i]);
+                int arg_cnt = parse_arg(command[i], argv,32);
+                if( arg_cnt < 0 ){
+                    exit(-1);
+                }
+                argv[arg_cnt] = 0; 
+                if(0 > execvp(file, &argv[1])){
+                    fprintf(stderr, "failed to execvp <%s>: %s\n", file, strerror(errno));
+                    exit(-errno);
+                }
+                /* execvp never return except error happend*/
+            }else{
+                fprintf(stderr, "child got command: %s\n", command[i]);
+                snprintf(cmd, cmd_len, "%s", command[i]);
+                *sub_process = true;
+            }
+            
             return 0;
         }else {
             int wstatus;
             pid_t pid = (pid_t)retval;
             if( resultbuf_len > 0 ){
+                printf("write data: <%s> to child\n", resultbuf);
                 while((0 > (retval=write(pipe_fd[1], resultbuf, resultbuf_len))) && errno == EINTR);
+                printf("write done\n");
                 if( retval < 0 ){
                     printf("failed to write data to pipe: %s\n", strerror(errno));
                     goto return_error;
@@ -192,8 +256,6 @@ handle_pipe_command(char* cmds, char* cmd, size_t cmd_len, bool* sub_process)
                 free(resultbuf);
                 resultbuf = NULL;
                 resultbuf_len = 0;
-            }else{
-                write(pipe_fd[1], "", 1);
             }
             close(pipe_fd[1]);
             pipe_fd[1] = -1;
@@ -231,9 +293,13 @@ return_error:
 
 int main(int argc, char** argv)
 {
-    bool sub_process;
-    char cmd[1024] = "";
+    char cmd[128];
+    bool sub_process = false;
     handle_pipe_command(argv[1], cmd, sizeof(cmd), &sub_process);
+
+    if( sub_process ){
+        system(cmd);
+    }
 
     return 0;
 }
