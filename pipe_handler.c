@@ -146,7 +146,8 @@ handle_pipe_command(char* cmds, char* cmd, size_t cmd_len, bool* sub_process)
     char* pipe_ch_pos;
     int pipe_ch_cnt;
     int retval;
-    int pipe_fd[2];
+    int parent_to_child_pipe_fd[2];
+    int child_to_parent_pipe_fd[2];
 
     ptr = cmds;
     if( strstr(ptr, "||") ){
@@ -197,23 +198,38 @@ handle_pipe_command(char* cmds, char* cmd, size_t cmd_len, bool* sub_process)
 
     resultbuf = NULL;
     resultbuf_len = 0;
-    pipe_fd[0] = pipe_fd[1] = -1;
+    parent_to_child_pipe_fd[0] = -1;
+    parent_to_child_pipe_fd[1] = -1;
+    child_to_parent_pipe_fd[0] = -1;
+    parent_to_child_pipe_fd[1] = -1;
+    
     for(int i = 0 ; i < command_cnt ; i ++ ){
         printf("exec commmand: %s\n", command[i]);
-        if( pipe2(pipe_fd, O_DIRECT) < 0 ){
-            printf("%% failed to create pipe fd: %s\n", strerror(errno));
+        //if( pipe2(parent_to_child_pipe_fd, O_DIRECT) < 0 ){
+        if( pipe(parent_to_child_pipe_fd) < 0 ){
+            printf("%% failed to create parent->child pipe: %s\n", strerror(errno));
             retval = -errno;
             goto return_error;
         }
-        
+       
+        //if(pipe2(child_to_parent_pipe_fd, O_DIRECT) < 0){
+        if(pipe(child_to_parent_pipe_fd) < 0){
+            printf("%% failed to create child->parent pipe: %s\n", strerror(errno));
+            retval = -errno;
+            goto return_error;
+        }
+
         retval = fork();
         if( retval < 0 ){
             retval = -errno;
             goto return_error;
         }else if(retval == 0){
-            dup2(pipe_fd[0], STDIN_FILENO);
-            dup2(pipe_fd[1], STDOUT_FILENO);
-            //dup2(pipe_fd[1], STDERR_FILENO);
+            close(parent_to_child_pipe_fd[1]);
+            dup2(parent_to_child_pipe_fd[0], STDIN_FILENO);
+            
+            close(child_to_parent_pipe_fd[0]);
+            dup2(child_to_parent_pipe_fd[1], STDOUT_FILENO);
+            dup2(child_to_parent_pipe_fd[1], STDERR_FILENO);
             
             //char buf[1025] = "";
             //buf[1024] = 0;
@@ -243,11 +259,17 @@ handle_pipe_command(char* cmds, char* cmd, size_t cmd_len, bool* sub_process)
             
             return 0;
         }else {
+            close(parent_to_child_pipe_fd[0]);
+            close(child_to_parent_pipe_fd[1]);
+            parent_to_child_pipe_fd[0] = -1;
+            child_to_parent_pipe_fd[1] = -1;
+
             int wstatus;
             pid_t pid = (pid_t)retval;
             if( resultbuf_len > 0 ){
+
                 printf("write data: <%s> to child\n", resultbuf);
-                while((0 > (retval=write(pipe_fd[1], resultbuf, resultbuf_len))) && errno == EINTR);
+                while((0 > (retval=write(parent_to_child_pipe_fd[1], resultbuf, resultbuf_len))) && errno == EINTR);
                 printf("write done\n");
                 if( retval < 0 ){
                     printf("failed to write data to pipe: %s\n", strerror(errno));
@@ -257,23 +279,23 @@ handle_pipe_command(char* cmds, char* cmd, size_t cmd_len, bool* sub_process)
                 resultbuf = NULL;
                 resultbuf_len = 0;
             }
-            close(pipe_fd[1]);
-            pipe_fd[1] = -1;
+            close(parent_to_child_pipe_fd[1]);
+            parent_to_child_pipe_fd[1] = -1;
 
             waitpid(pid, &wstatus, 0);
             wstatus = WEXITSTATUS(wstatus);
-            resultbuf_len = readall(pipe_fd[0], &resultbuf);
+            resultbuf_len = readall(child_to_parent_pipe_fd[0], &resultbuf);
             resultbuf[resultbuf_len] = 0;
             if(0 > resultbuf_len){
                 retval = -errno;
                 goto return_error;
             }
             printf("read: %s\n", resultbuf);
-            close(pipe_fd[0]);
+            close(child_to_parent_pipe_fd[0]);
          }
     }
 
-    printf("%s\n", resultbuf);
+    printf("#%s$\n", resultbuf);
     free(resultbuf);
 
     return 0;
@@ -282,11 +304,15 @@ return_error:
     if(resultbuf){
         free(resultbuf);
     }
-    if( pipe_fd[0] > 0){
-        close(pipe_fd[0]);
-        close(pipe_fd[1]);
-    }
-
+    if( child_to_parent_pipe_fd[0] >= 0)
+        close(child_to_parent_pipe_fd[0]);
+    if( child_to_parent_pipe_fd[1] >= 0)
+        close(child_to_parent_pipe_fd[1]);
+    if( parent_to_child_pipe_fd[0] >= 0)
+        close(parent_to_child_pipe_fd[0]);
+    if( parent_to_child_pipe_fd[1] >= 0)
+        close(parent_to_child_pipe_fd[1]);
+    
     return 0;
 }
 
